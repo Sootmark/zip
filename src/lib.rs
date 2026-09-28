@@ -8,14 +8,13 @@
 //! Encrypted entries (ZipCrypto, AES) are listed but not readable yet.
 
 mod cp437;
-mod inflate;
 
 use std::io::{self, Read, Seek, SeekFrom, Take};
 
 use common::bytes::Reader;
 use common::checksum::Crc32;
 
-pub use inflate::{Inflate, Variant};
+pub use common::deflate::{Inflate, Variant};
 
 const EOCD_SIGNATURE: u32 = 0x0605_4b50;
 const EOCD_SIZE: usize = 22;

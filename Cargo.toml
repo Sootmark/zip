@@ -1,6 +1,6 @@
 [package]
 name = "zip"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.80"
 description = "Read-only zip archives for forensic intake: zip64, stored/DEFLATE/Deflate64, streaming reads with CRC-32 verification. Written from scratch."
@@ -9,7 +9,7 @@ repository = "https://github.com/Sootmark/zip"
 publish = false
 
 [dependencies]
-common = { git = "https://github.com/Sootmark/common", tag = "v0.2.0", version = "0.2.0" }
+common = { git = "https://github.com/Sootmark/common", tag = "v0.3.0", version = "0.3.0" }
 
 [dev-dependencies]
 proptest = "1"
