@@ -5,7 +5,7 @@ use std::io::{Cursor, Read};
 
 use common::json::{self, Json};
 use common::sha256::{hex, Sha256};
-use zip::Archive;
+use sootmark_zip::Archive;
 
 fn fixture(name: &str) -> Vec<u8> {
     std::fs::read(format!(

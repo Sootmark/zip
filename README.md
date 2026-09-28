@@ -2,8 +2,13 @@
 
 Read-only zip archives for forensic intake, written from scratch (DEFLATE included) on [`Sootmark/common`](https://github.com/Sootmark/common). Cryptography is not written in-house: WinZip AES uses RustCrypto's `aes`, `ctr`, `hmac`, `pbkdf2` and `sha1` (MIT OR Apache-2.0).
 
+```toml
+[dependencies]
+sootmark-zip = "0.2"
+```
+
 ```rust
-let mut archive = zip::Archive::open(std::io::BufReader::new(std::fs::File::open("Collection-FS01.zip")?))?;
+let mut archive = sootmark_zip::Archive::open(std::io::BufReader::new(std::fs::File::open("Collection-FS01.zip")?))?;
 for index in 0..archive.entries().len() {
     let name = archive.entries()[index].name.clone();
     let mut reader = archive.reader(index)?; // streams; verifies size and CRC-32 at the end

@@ -1,15 +1,18 @@
 [package]
-name = "zip"
-version = "0.2.0"
+name = "sootmark-zip"
+version = "0.2.1"
 edition = "2021"
 rust-version = "1.80"
 description = "Read-only zip archives for forensic intake: zip64, stored/DEFLATE/Deflate64, WinZip AES decryption, streaming reads with CRC-32 verification. Written from scratch; cryptography from RustCrypto."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Sootmark/zip"
-publish = false
+homepage = "https://sootmark.com"
+keywords = ["forensics", "dfir", "incident-response"]
+# Sources only: test fixtures (disk images, logs, test keys) stay in the repository.
+include = ["/src", "/README.md", "/LICENSE-APACHE", "/LICENSE-MIT"]
 
 [dependencies]
-common = { git = "https://github.com/Sootmark/common", tag = "v0.3.1", version = "0.3.1" }
+common = { package = "sootmark-common", version = "0.3.2" }
 # Cryptography is never written in-house (D11): RustCrypto, MIT OR Apache-2.0.
 aes = "0.8"
 ctr = "0.9"

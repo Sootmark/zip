@@ -4,7 +4,7 @@
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
 
 use common::sha256::{hex, Sha256};
-use zip::{Aes, Archive, Encryption, Strength};
+use sootmark_zip::{Aes, Archive, Encryption, Strength};
 
 const PASSWORD: &[u8] = b"correct horse";
 /// `shasum -a 256` of the files the fixtures were made from.

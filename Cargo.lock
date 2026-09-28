@@ -66,11 +66,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "common"
-version = "0.3.1"
-source = "git+https://github.com/Sootmark/common?tag=v0.3.1#7e58fa4444246f9ce2b5a9cc23ff07320ce099a0"
-
-[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -364,6 +359,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "sootmark-common"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "edd82ca69e758140dc089a1eae16fc466477a48f9097ab3f7d2788ccf6536290"
+
+[[package]]
+name = "sootmark-zip"
+version = "0.2.1"
+dependencies = [
+ "aes",
+ "ctr",
+ "hmac",
+ "pbkdf2",
+ "proptest",
+ "sha1",
+ "sootmark-common",
+]
+
+[[package]]
 name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -474,17 +488,4 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "zip"
-version = "0.2.0"
-dependencies = [
- "aes",
- "common",
- "ctr",
- "hmac",
- "pbkdf2",
- "proptest",
- "sha1",
 ]

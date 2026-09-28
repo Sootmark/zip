@@ -3,7 +3,7 @@
 use std::io::{Cursor, Read};
 
 use proptest::prelude::*;
-use zip::{Archive, Inflate, Variant};
+use sootmark_zip::{Archive, Inflate, Variant};
 
 const MIXED: &[u8] = include_bytes!("fixtures/mixed.zip");
 const ENCRYPTED: &[u8] = include_bytes!("fixtures/aes256-7zip.zip");
