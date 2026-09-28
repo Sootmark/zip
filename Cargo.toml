@@ -1,0 +1,27 @@
+[package]
+name = "zip"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+description = "Read-only zip archives for forensic intake: zip64, stored/DEFLATE/Deflate64, streaming reads with CRC-32 verification. Written from scratch."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Sootmark/zip"
+publish = false
+
+[dependencies]
+common = { git = "https://github.com/Sootmark/common", tag = "v0.2.0", version = "0.2.0" }
+
+[dev-dependencies]
+proptest = "1"
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_possible_wrap = "allow"
+cast_precision_loss = "allow"
