@@ -1,15 +1,21 @@
 [package]
 name = "zip"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.80"
-description = "Read-only zip archives for forensic intake: zip64, stored/DEFLATE/Deflate64, streaming reads with CRC-32 verification. Written from scratch."
+description = "Read-only zip archives for forensic intake: zip64, stored/DEFLATE/Deflate64, WinZip AES decryption, streaming reads with CRC-32 verification. Written from scratch; cryptography from RustCrypto."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Sootmark/zip"
 publish = false
 
 [dependencies]
-common = { git = "https://github.com/Sootmark/common", tag = "v0.3.0", version = "0.3.0" }
+common = { git = "https://github.com/Sootmark/common", tag = "v0.3.1", version = "0.3.1" }
+# Cryptography is never written in-house (D11): RustCrypto, MIT OR Apache-2.0.
+aes = "0.8"
+ctr = "0.9"
+hmac = "0.12"
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+sha1 = "0.10"
 
 [dev-dependencies]
 proptest = "1"
@@ -25,3 +31,7 @@ cast_possible_truncation = "allow"
 cast_sign_loss = "allow"
 cast_possible_wrap = "allow"
 cast_precision_loss = "allow"
+
+# Key derivation (PBKDF2) is slow unoptimised; tests open many encrypted entries.
+[profile.dev.package."*"]
+opt-level = 3

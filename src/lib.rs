@@ -3,18 +3,26 @@
 //! - zip64, UTF-8 and code page 437 file names, data descriptors;
 //! - stored, DEFLATE and Deflate64 entries, decompressed while streaming;
 //! - **every entry's CRC-32 and size are verified** when it's read to the
-//!   end: a corrupted or altered evidence archive is reported, not trusted.
-//!
-//! Encrypted entries (ZipCrypto, AES) are listed but not readable yet.
+//!   end: a corrupted or altered evidence archive is reported, not trusted;
+//! - WinZip AES encrypted entries (AE-1, AE-2), authenticated by their
+//!   HMAC; legacy ZipCrypto entries are listed but not readable;
+//! - stored entries opened as seekable streams, so a zip inside a zip
+//!   (such as an encrypted Velociraptor collection) is read in place.
 
 mod cp437;
+mod winzip_aes;
 
 use std::io::{self, Read, Seek, SeekFrom, Take};
 
 use common::bytes::Reader;
 use common::checksum::Crc32;
+use hmac::{Hmac, Mac};
+use sha1::Sha1;
 
 pub use common::deflate::{Inflate, Variant};
+pub use winzip_aes::{Aes, Strength};
+
+use winzip_aes::{Cipher, Decrypt};
 
 const EOCD_SIGNATURE: u32 = 0x0605_4b50;
 const EOCD_SIZE: usize = 22;
@@ -52,11 +60,22 @@ pub struct Entry {
     pub compressed_size: u64,
     /// CRC-32 of the uncompressed content.
     pub crc32: u32,
-    /// Compression method.
+    /// Compression method (for AES entries, the one applied before
+    /// encryption).
     pub method: u16,
-    /// Whether the entry is encrypted (not readable yet).
-    pub encrypted: bool,
+    /// How the entry is encrypted, if it is.
+    pub encryption: Option<Encryption>,
     local_header_offset: u64,
+}
+
+/// How an entry is encrypted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Encryption {
+    /// WinZip AES: readable with the password.
+    Aes(Aes),
+    /// Legacy ZipCrypto, PKWARE strong encryption, or a malformed AES
+    /// header: not readable.
+    Unsupported,
 }
 
 impl Entry {
@@ -64,6 +83,25 @@ impl Entry {
     #[must_use]
     pub fn is_directory(&self) -> bool {
         self.name.ends_with('/')
+    }
+
+    /// Whether the stored CRC-32 is meaningful (AE-2 zeroes it).
+    fn has_crc(&self) -> bool {
+        !matches!(
+            self.encryption,
+            Some(Encryption::Aes(Aes { ae2: true, .. }))
+        )
+    }
+
+    fn aes(&self) -> io::Result<Option<Aes>> {
+        match self.encryption {
+            None => Ok(None),
+            Some(Encryption::Aes(aes)) => Ok(Some(aes)),
+            Some(Encryption::Unsupported) => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "zip entry uses an unsupported encryption (ZipCrypto or PKWARE)",
+            )),
+        }
     }
 }
 
@@ -100,30 +138,54 @@ impl<R: Read + Seek> Archive<R> {
     /// When the entry is encrypted, uses an unsupported method, or its local
     /// header can't be read.
     pub fn reader(&mut self, index: usize) -> io::Result<EntryReader<'_, R>> {
-        let entry = self
-            .entries
-            .get(index)
-            .cloned()
-            .ok_or_else(|| invalid("no such entry"))?;
-        if entry.encrypted {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "encrypted zip entry",
-            ));
-        }
+        self.open_reader(index, None)
+    }
+
+    /// A reader over the content of entry `index`, decrypting it with
+    /// `password` if it's encrypted. Reading it to the end verifies its
+    /// size, and its CRC-32 and/or authentication code.
+    ///
+    /// # Errors
+    /// [`io::ErrorKind::PermissionDenied`] for a wrong password; otherwise as
+    /// [`Archive::reader`].
+    pub fn reader_with_password(
+        &mut self,
+        index: usize,
+        password: &[u8],
+    ) -> io::Result<EntryReader<'_, R>> {
+        self.open_reader(index, Some(password))
+    }
+
+    fn open_reader(
+        &mut self,
+        index: usize,
+        password: Option<&[u8]>,
+    ) -> io::Result<EntryReader<'_, R>> {
+        let entry = self.entry(index)?;
+        let aes = entry.aes()?;
         let data_offset = self.data_offset(&entry)?;
-        self.inner.seek(SeekFrom::Start(data_offset))?;
-        let compressed = (&mut self.inner).take(entry.compressed_size);
-        let decoder = match entry.method {
-            method::STORED => Decoder::Stored(compressed),
-            method::DEFLATE => Decoder::Inflate(Inflate::new(compressed, Variant::Deflate)),
-            method::DEFLATE64 => Decoder::Inflate(Inflate::new(compressed, Variant::Deflate64)),
-            _ => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "unsupported zip compression method",
-                ))
+        let source = match aes {
+            None => {
+                self.inner.seek(SeekFrom::Start(data_offset))?;
+                Source::Plain((&mut self.inner).take(entry.compressed_size))
             }
+            Some(aes) => {
+                let password = password.ok_or_else(password_needed)?;
+                let header = read_at(&mut self.inner, data_offset, aes.header_size())?;
+                let keys = winzip_aes::keys(aes, password, &header)?;
+                let length = ciphertext_length(&entry, aes)?;
+                Source::Aes(Box::new(Decrypt::new(
+                    (&mut self.inner).take(length + winzip_aes::AUTH_CODE_SIZE),
+                    keys,
+                    length,
+                )))
+            }
+        };
+        let decoder = match entry.method {
+            method::STORED => Decoder::Stored(source),
+            method::DEFLATE => Decoder::Inflate(Inflate::new(source, Variant::Deflate)),
+            method::DEFLATE64 => Decoder::Inflate(Inflate::new(source, Variant::Deflate64)),
+            _ => return Err(unsupported_method()),
         };
         Ok(EntryReader {
             decoder,
@@ -131,6 +193,73 @@ impl<R: Read + Seek> Archive<R> {
             read: 0,
             entry,
         })
+    }
+
+    /// Turn the archive into a seekable stream over stored (uncompressed)
+    /// entry `index`, decrypting it with `password` if it's encrypted. This
+    /// is how an archive inside an archive is opened without extracting it.
+    ///
+    /// Random access can't check the CRC-32 or authentication code as it
+    /// goes: call [`StoredEntry::verify`] for a full integrity pass.
+    ///
+    /// # Errors
+    /// When the entry is compressed, needs a password that wasn't given, or
+    /// the password is wrong.
+    pub fn into_stored(
+        mut self,
+        index: usize,
+        password: Option<&[u8]>,
+    ) -> io::Result<StoredEntry<R>> {
+        let entry = self.entry(index)?;
+        if entry.method != method::STORED {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "only stored zip entries can be opened as seekable streams",
+            ));
+        }
+        let aes = entry.aes()?;
+        let mut start = self.data_offset(&entry)?;
+        let (cipher, mac) = match aes {
+            None => (None, None),
+            Some(aes) => {
+                let password = password.ok_or_else(password_needed)?;
+                let header = read_at(&mut self.inner, start, aes.header_size())?;
+                let keys = winzip_aes::keys(aes, password, &header)?;
+                start += aes.header_size();
+                (Some(keys.cipher), Some(keys.mac))
+            }
+        };
+        let length = match aes {
+            None => entry.compressed_size,
+            Some(aes) => ciphertext_length(&entry, aes)?,
+        };
+        if length != entry.size {
+            return Err(invalid("stored zip entry sizes disagree"));
+        }
+        // Every later offset is at most this: checked once, here.
+        let archive_length = self.inner.seek(SeekFrom::End(0))?;
+        let end = start
+            .checked_add(length)
+            .and_then(|end| end.checked_add(aes.map_or(0, |_| winzip_aes::AUTH_CODE_SIZE)));
+        if end.map_or(true, |end| end > archive_length) {
+            return Err(invalid("stored zip entry extends past the archive"));
+        }
+        Ok(StoredEntry {
+            inner: self.inner,
+            start,
+            length,
+            position: 0,
+            cipher,
+            mac,
+            entry,
+        })
+    }
+
+    fn entry(&self, index: usize) -> io::Result<Entry> {
+        self.entries
+            .get(index)
+            .cloned()
+            .ok_or_else(|| invalid("no such entry"))
     }
 
     /// Where an entry's data starts: after its local header.
@@ -151,12 +280,29 @@ impl<R: Read + Seek> Archive<R> {
     }
 }
 
-enum Decoder<'a, R> {
-    Stored(Take<&'a mut R>),
-    Inflate(Inflate<Take<&'a mut R>>),
+/// An entry's raw data, decrypted if needed.
+enum Source<'a, R> {
+    Plain(Take<&'a mut R>),
+    // Boxed: the key schedule is large and plain entries are the norm.
+    Aes(Box<Decrypt<Take<&'a mut R>>>),
 }
 
-/// Streams an entry's content, verifying size and CRC-32 at the end.
+impl<R: Read> Read for Source<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Self::Plain(inner) => inner.read(buf),
+            Self::Aes(inner) => inner.read(buf),
+        }
+    }
+}
+
+enum Decoder<'a, R> {
+    Stored(Source<'a, R>),
+    Inflate(Inflate<Source<'a, R>>),
+}
+
+/// Streams an entry's content, verifying its size, CRC-32 and (encrypted
+/// entries) authentication code at the end.
 pub struct EntryReader<'a, R> {
     decoder: Decoder<'a, R>,
     crc: Crc32,
@@ -185,18 +331,150 @@ impl<R: Read> Read for EntryReader<'_, R> {
     }
 }
 
-impl<R> EntryReader<'_, R> {
-    fn verify(&self) -> io::Result<()> {
+impl<R: Read> EntryReader<'_, R> {
+    fn verify(&mut self) -> io::Result<()> {
         if self.read != self.entry.size {
             return Err(invalid("zip entry shorter than its declared size"));
         }
-        if self.crc.finalize() != self.entry.crc32 {
+        let source = match &mut self.decoder {
+            Decoder::Stored(source) => source,
+            Decoder::Inflate(inflate) => inflate.get_mut(),
+        };
+        if let Source::Aes(decrypt) = source {
+            decrypt.finish()?;
+        }
+        if self.entry.has_crc() && self.crc.finalize() != self.entry.crc32 {
             return Err(invalid(
                 "zip entry CRC-32 mismatch: content corrupted or altered",
             ));
         }
         Ok(())
     }
+}
+
+/// A stored entry read as a seekable stream (see [`Archive::into_stored`]).
+pub struct StoredEntry<R> {
+    inner: R,
+    /// Offset of the (cipher)text in `inner`.
+    start: u64,
+    length: u64,
+    position: u64,
+    cipher: Option<Cipher>,
+    mac: Option<Hmac<Sha1>>,
+    entry: Entry,
+}
+
+impl<R: Read + Seek> StoredEntry<R> {
+    /// Read the whole entry once and check its CRC-32 and, when encrypted,
+    /// its authentication code. Leaves the position unchanged.
+    ///
+    /// # Errors
+    /// On read errors or when the entry is corrupted or altered.
+    pub fn verify(&mut self) -> io::Result<()> {
+        let mut crc = Crc32::new();
+        let mut mac = self.mac.clone();
+        let mut buffer = vec![0u8; VERIFY_BUFFER];
+        let mut offset = 0;
+        while offset < self.length {
+            let chunk = (self.length - offset).min(VERIFY_BUFFER as u64) as usize;
+            self.inner.seek(SeekFrom::Start(self.start + offset))?;
+            self.inner.read_exact(&mut buffer[..chunk])?;
+            if let Some(mac) = &mut mac {
+                mac.update(&buffer[..chunk]);
+            }
+            if let Some(cipher) = &mut self.cipher {
+                cipher.seek(offset);
+                cipher.apply(&mut buffer[..chunk]);
+            }
+            crc.update(&buffer[..chunk]);
+            offset += chunk as u64;
+        }
+        if let Some(mac) = mac {
+            let mut stored = [0u8; winzip_aes::AUTH_CODE_SIZE as usize];
+            self.inner.seek(SeekFrom::Start(self.start + self.length))?;
+            self.inner.read_exact(&mut stored)?;
+            winzip_aes::check_auth_code(mac, &stored)?;
+        }
+        if self.entry.has_crc() && crc.finalize() != self.entry.crc32 {
+            return Err(invalid(
+                "zip entry CRC-32 mismatch: content corrupted or altered",
+            ));
+        }
+        Ok(())
+    }
+
+    /// The entry this stream reads.
+    #[must_use]
+    pub const fn entry(&self) -> &Entry {
+        &self.entry
+    }
+}
+
+impl<R: Read + Seek> Read for StoredEntry<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let left = self.length.saturating_sub(self.position);
+        let wanted = buf.len().min(usize::try_from(left).unwrap_or(usize::MAX));
+        if wanted == 0 {
+            return Ok(0);
+        }
+        self.inner
+            .seek(SeekFrom::Start(self.start + self.position))?;
+        let count = self.inner.read(&mut buf[..wanted])?;
+        if count == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "stored zip entry truncated",
+            ));
+        }
+        if let Some(cipher) = &mut self.cipher {
+            cipher.seek(self.position);
+            cipher.apply(&mut buf[..count]);
+        }
+        self.position += count as u64;
+        Ok(count)
+    }
+}
+
+impl<R: Read + Seek> Seek for StoredEntry<R> {
+    fn seek(&mut self, to: SeekFrom) -> io::Result<u64> {
+        let target = match to {
+            SeekFrom::Start(offset) => Some(offset),
+            SeekFrom::End(delta) => self.length.checked_add_signed(delta),
+            SeekFrom::Current(delta) => self.position.checked_add_signed(delta),
+        };
+        self.position = target.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "seek before the start of the entry",
+            )
+        })?;
+        Ok(self.position)
+    }
+}
+
+/// Chunk size of [`StoredEntry::verify`].
+const VERIFY_BUFFER: usize = 1 << 16;
+
+/// Length of an AES entry's ciphertext.
+fn ciphertext_length(entry: &Entry, aes: Aes) -> io::Result<u64> {
+    entry
+        .compressed_size
+        .checked_sub(aes.overhead())
+        .ok_or_else(|| invalid("encrypted zip entry too short"))
+}
+
+fn password_needed() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        "encrypted zip entry: a password is needed",
+    )
+}
+
+fn unsupported_method() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Unsupported,
+        "unsupported zip compression method",
+    )
 }
 
 struct CentralDirectory {
@@ -307,13 +585,20 @@ fn parse_central_entry(r: &mut Reader<'_>) -> common::bytes::Result<Option<Entry
     };
     let (size, compressed_size, local_header_offset) =
         apply_zip64(extra, size, compressed_size, local_header_offset)?;
+    let aes = (method == winzip_aes::METHOD)
+        .then(|| winzip_aes::parse_extra(extra))
+        .flatten();
+    let encryption = (flags & FLAG_ENCRYPTED != 0).then_some(match aes {
+        Some(aes) => Encryption::Aes(aes),
+        None => Encryption::Unsupported,
+    });
     Ok(Some(Entry {
         name,
         size,
         compressed_size,
         crc32,
-        method,
-        encrypted: flags & FLAG_ENCRYPTED != 0,
+        method: aes.map_or(method, |aes| aes.method),
+        encryption,
         local_header_offset,
     }))
 }
