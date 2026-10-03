@@ -7,15 +7,19 @@
 //! - WinZip AES encrypted entries (AE-1, AE-2), authenticated by their
 //!   HMAC; legacy ZipCrypto entries are listed but not readable;
 //! - stored entries opened as seekable streams, so a zip inside a zip
-//!   (such as an encrypted Velociraptor collection) is read in place.
+//!   (such as an encrypted Velociraptor collection) is read in place;
+//! - each entry's modification time, from its NTFS, Info-ZIP or DOS fields,
+//!   UTC or local to an unknown zone as recorded.
 
 mod cp437;
+mod mtime;
 mod winzip_aes;
 
 use std::io::{self, Read, Seek, SeekFrom, Take};
 
 use common::bytes::Reader;
 use common::checksum::Crc32;
+use common::time::Ts;
 use hmac::{Hmac, Mac};
 use sha1::Sha1;
 
@@ -65,6 +69,13 @@ pub struct Entry {
     pub method: u16,
     /// How the entry is encrypted, if it is.
     pub encryption: Option<Encryption>,
+    /// When the entry was last modified, from the most precise record: the
+    /// NTFS extra field (UTC, 100 ns), the Info-ZIP extended timestamp (UTC,
+    /// 1 s), else the DOS fields: the zipping machine's wall clock, 2 s,
+    /// [`LocalUnknownZone`](common::time::Semantic::LocalUnknownZone). The
+    /// precision tells which source it is. `None` when no valid time is
+    /// recorded.
+    pub modified: Option<Ts>,
     local_header_offset: u64,
 }
 
@@ -566,7 +577,8 @@ fn parse_central_entry(r: &mut Reader<'_>) -> common::bytes::Result<Option<Entry
     r.skip(4)?; // versions
     let flags = r.u16_le()?;
     let method = r.u16_le()?;
-    r.skip(4)?; // time, date
+    let dos_time = r.u16_le()?;
+    let dos_date = r.u16_le()?;
     let crc32 = r.u32_le()?;
     let compressed_size = r.u32_le()?;
     let size = r.u32_le()?;
@@ -599,6 +611,7 @@ fn parse_central_entry(r: &mut Reader<'_>) -> common::bytes::Result<Option<Entry
         crc32,
         method: aes.map_or(method, |aes| aes.method),
         encryption,
+        modified: mtime::parse(extra, dos_date, dos_time),
         local_header_offset,
     }))
 }

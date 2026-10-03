@@ -4,7 +4,7 @@ Read-only zip archives for forensic intake, written from scratch (DEFLATE includ
 
 ```toml
 [dependencies]
-sootmark-zip = "0.2"
+sootmark-zip = "0.3"
 ```
 
 ```rust
@@ -22,6 +22,7 @@ for index in 0..archive.entries().len() {
 - **Every entry's CRC-32 and size are verified** when read to the end: a corrupted or altered evidence archive is reported ("CRC-32 mismatch: content corrupted or altered"), never silently trusted.
 - **WinZip AES** entries (AES-128/192/256, AE-1 and AE-2), as written by 7-Zip, WinZip, libarchive and Velociraptor: `reader_with_password`. The HMAC is checked at the end, so altered ciphertext is reported, not decrypted into plausible garbage. A wrong password is `PermissionDenied`. Legacy ZipCrypto is listed (`Encryption::Unsupported`) but not readable.
 - **Zips inside zips, read in place:** `into_stored` turns a stored entry (encrypted or not) into a `Read + Seek` stream, so a nested archive such as an encrypted Velociraptor collection's `data.zip` opens with `Archive::open` without being extracted. `StoredEntry::verify` checks its CRC-32 / HMAC in one pass.
+- **Modification times** (`Entry::modified`, a `sootmark_common::time::Ts`) from the most precise record: the NTFS extra field (UTC, 100 ns, written by 7-Zip), else the Info-ZIP extended timestamp (UTC, 1 s), else the MS-DOS fields. DOS times are the zipping machine's wall clock in an unknown zone, so they stay `LocalUnknownZone` (convert with `assume_offset` once the zone is known), never passed off as UTC. A zero, sentinel or impossible value, or a malformed extra field, falls through to the next source; `None` when none is left.
 
 ## Verification
 
@@ -35,6 +36,8 @@ for index in 0..archive.entries().len() {
 | One ciphertext byte altered | authentication failure reported (streaming and `verify`) |
 | Random access into a stored AES entry at unaligned offsets | matches the streamed plaintext |
 | One byte of content altered | CRC-32 mismatch reported |
+| Modification times from 7-Zip (NTFS), Info-ZIP (extended timestamp) and Python `zipfile` (DOS), cross-checked with `zipinfo` | UTC to 100 ns / 1 s; DOS kept as local time |
+| Impossible DOS dates (month 13, 30 February, hour 25), zero, and hostile NTFS / extended-timestamp fields (truncated, overrunning, duplicated, zero, sentinel) | no time, or the next source; never panics |
 | Corrupted and truncated archives (plain and encrypted), random compressed streams | errors, never panics |
 | Throughput (release, one thread) | ~165 MiB/s on DEFLATE-compressed event logs |
 
