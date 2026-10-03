@@ -629,7 +629,9 @@ fn apply_zip64(
     while r.remaining() >= 4 {
         let id = r.u16_le()?;
         let length = usize::from(r.u16_le()?);
-        let mut field = r.sub(length)?;
+        // A field running past the extra data ends it: what came before
+        // still counts, and the entry stays readable.
+        let Ok(mut field) = r.sub(length) else { break };
         if id != ZIP64_EXTRA_ID {
             continue;
         }
@@ -660,4 +662,21 @@ fn invalid(message: &'static str) -> io::Error {
 #[allow(clippy::needless_pass_by_value)] // used as a `map_err` adapter
 fn read_error(error: common::bytes::Error) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_overrunning_extra_field_keeps_the_entry() {
+        // An extended timestamp declaring 0xffff bytes it doesn't have.
+        let extra = [0x55, 0x54, 0xff, 0xff, 1, 0, 0, 0, 0x60];
+        assert_eq!(apply_zip64(&extra, 5, 7, 9).unwrap(), (5, 7, 9));
+        // A ZIP64 field before it still counts.
+        let mut zip64 = vec![0x01, 0x00, 8, 0];
+        zip64.extend_from_slice(&42u64.to_le_bytes());
+        zip64.extend_from_slice(&extra);
+        assert_eq!(apply_zip64(&zip64, ZIP64_U32, 7, 9).unwrap(), (42, 7, 9));
+    }
 }
