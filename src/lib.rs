@@ -1,4 +1,6 @@
-//! Read-only zip archives for forensic intake.
+//! Zip archives for forensic intake and collection.
+//!
+//! Reading ([`Archive`]):
 //!
 //! - zip64, UTF-8 and code page 437 file names, data descriptors;
 //! - stored, DEFLATE and Deflate64 entries, decompressed while streaming;
@@ -10,10 +12,15 @@
 //!   (such as an encrypted Velociraptor collection) is read in place;
 //! - each entry's modification time, from its NTFS, Info-ZIP or DOS fields,
 //!   UTC or local to an unknown zone as recorded.
+//!
+//! Writing ([`Writer`], see [`mod@write`]): entries of any size streamed
+//! into a stored archive on a plain [`Write`](std::io::Write), zip64 when
+//! needed, with UTC modification times to 100 ns.
 
 mod cp437;
 mod mtime;
 mod winzip_aes;
+pub mod write;
 
 use std::io::{self, Read, Seek, SeekFrom, Take};
 
@@ -25,6 +32,7 @@ use sha1::Sha1;
 
 pub use common::deflate::{Inflate, Variant};
 pub use winzip_aes::{Aes, Strength};
+pub use write::Writer;
 
 use winzip_aes::{Cipher, Decrypt};
 

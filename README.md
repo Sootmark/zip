@@ -1,10 +1,10 @@
 # zip
 
-Read-only zip archives for forensic intake, written from scratch (DEFLATE included) on [`Sootmark/common`](https://github.com/Sootmark/common). Cryptography is not written in-house: WinZip AES uses RustCrypto's `aes`, `ctr`, `hmac`, `pbkdf2` and `sha1` (MIT OR Apache-2.0).
+Zip archives for forensic intake and collection, written from scratch (DEFLATE included) on [`Sootmark/common`](https://github.com/Sootmark/common). Cryptography is not written in-house: WinZip AES uses RustCrypto's `aes`, `ctr`, `hmac`, `pbkdf2` and `sha1` (MIT OR Apache-2.0).
 
 ```toml
 [dependencies]
-sootmark-zip = "0.3"
+sootmark-zip = "0.4"
 ```
 
 ```rust
@@ -40,6 +40,29 @@ for index in 0..archive.entries().len() {
 | Impossible DOS dates (month 13, 30 February, hour 25), zero, and hostile NTFS / extended-timestamp fields (truncated, overrunning, duplicated, zero, sentinel) | no time, or the next source; never panics |
 | Corrupted and truncated archives (plain and encrypted), random compressed streams | errors, never panics |
 | Throughput (release, one thread) | ~165 MiB/s on DEFLATE-compressed event logs |
+| Written archives read back by this crate: arbitrary names, contents and times (property tests), 65,537 entries | names, sizes, CRC-32, contents and times (100 ns) preserved |
+| Written archives on Debian 13 (`examples/write_archive.rs`): names, times, empty entry; a 4.5 GiB entry followed by one past 4 GiB; 70,000 entries | `unzip -t`, `7z t` (7-Zip 25.01) and Python 3.13 `zipfile.testzip()` report no error; `zipinfo` and 7-Zip show the expected times, sizes and offsets |
+| Writing the 4.5 GiB archive (release, one thread) | ~17 s, 11 MiB peak memory |
+
+## Writing
+
+```rust
+let file = std::io::BufWriter::new(std::fs::File::create("collection.zip")?);
+let mut writer = sootmark_zip::Writer::new(file);
+let mut source = std::fs::File::open(r"C:\Windows\System32\winevt\Logs\Security.evtx")?; // any `Read`
+let entry = writer.add("C/Windows/System32/winevt/Logs/Security.evtx", modified, &mut source)?; // modified: Option<Ts>, UTC
+println!("{} bytes, CRC-32 {:08x}", entry.size, entry.crc32);
+writer.finish()?;
+```
+
+- **Streaming:** entries of any size go from a `Read` to a plain `Write` (file, pipe, socket: no `Seek`), through one 64 KiB buffer. Only the central directory (one small record per entry) is kept in memory. Sizes and CRC-32 follow the data in zip64 data descriptors.
+- **zip64 when needed:** every local header carries a zip64 field, so an entry can grow past 4 GiB; the central directory and end records use zip64 only for entries, offsets or counts that need it (4 GiB, 65,535 entries).
+- **Stored** (not compressed), **UTF-8 names**. Names must be clean relative paths (`/`-separated, no empty, `.` or `..` component, no backslash, NUL or drive letter): anything else is `InvalidInput`, before anything is written. Duplicate names are not detected.
+- **Modification times:** a UTC `Ts` goes in the NTFS extra field (100 ns), the Info-ZIP extended timestamp (when in 1970–2038) and the DOS fields (as a UTC wall clock, clamped to 1980–2107). A local time of unknown zone goes in the DOS fields only. `None` is DOS 1980-01-01 00:00:00.
+- **A failing source doesn't break the archive:** when reading the content fails part-way, the entry is completed with the bytes read so far (correct size and CRC-32) and `add` returns the read error carrying a `write::Truncated` with the entry. A failed write to the output makes every later call fail.
+- **Deterministic:** the same inputs give the same bytes.
+
+Not supported: compression, encryption, comments, Unix permissions, access and creation times (left unset). Stored entries with a data descriptor can only be read through the central directory, as `unzip`, 7-Zip, Python and this crate do: forward-only readers (Java's `ZipInputStream`, extraction from a pipe) can't find where they end.
 
 Declared sizes and compression ratios are not limits: consumers must bound what they read (zip bombs), as the fuzz tests do.
 

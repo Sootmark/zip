@@ -1,9 +1,9 @@
 [package]
 name = "sootmark-zip"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2021"
 rust-version = "1.80"
-description = "Read-only zip archives for forensic intake: zip64, stored/DEFLATE/Deflate64, WinZip AES decryption, streaming reads with CRC-32 verification. Written from scratch; cryptography from RustCrypto."
+description = "Zip archives for forensic intake and collection: zip64, stored/DEFLATE/Deflate64, WinZip AES decryption, streaming reads with CRC-32 verification, and a streaming writer for evidence of any size. Written from scratch; cryptography from RustCrypto."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Sootmark/zip"
 homepage = "https://sootmark.com"
